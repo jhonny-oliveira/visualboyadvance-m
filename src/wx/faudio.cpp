@@ -22,20 +22,20 @@ int GetFADevices(FAudio* fa, wxArrayString* names, wxArrayString* ids,
 {
     uint32_t dev_count = 0;
 
-    if (FAudio_GetDeviceCount(fa, &dev_count) != R_OK) {
+    if (FAudio_GetDeviceCount(fa, &dev_count) != 0) {
         wxLogError(_("FAudio: Enumerating devices failed!"));
         return true;
     } else {
         FAudioDeviceDetails dd;
 
         for (uint32_t i = 0; i < dev_count; i++) {
-            if (FAudio_GetDeviceDetails(fa, i, &dd) != R_OK) {
+            if (FAudio_GetDeviceDetails(fa, i, &dd) != 0) {
                 continue;
             } else {
                 if (ids) {
                     ids->push_back((wchar_t*) dd.DeviceID); //FAudio is an interesting beast, but not that hard to adapt... once you get used to it, XAudio2 wouldn't need this, but FAudio declares FAudioDeviceDetails as int32_t
                     names->push_back((wchar_t*) dd.DisplayName);
-                } else if (*match == dd.DeviceID)
+                } else if (*match == wxString((wchar_t*) dd.DeviceID))
                     return i;
             }
         }
@@ -52,7 +52,7 @@ bool GetFADevices(wxArrayString& names, wxArrayString& ids)
     flags = FAUDIO_DEBUG_ENGINE;
 #endif
 
-    if (FAudioCreate(&fa, flags, FAUDIO_DEFAULT_PROCESSOR) != R_OK) {
+    if (FAudioCreate(&fa, flags, FAUDIO_DEFAULT_PROCESSOR) != 0) {
         wxLogError(_("The FAudio interface failed to initialize!"));
         return false;
     }
@@ -193,7 +193,7 @@ void FAudio_Output::close()
 
     if (sVoice) {
         if (playing) {
-            assert(FAudioSourceVoice_Stop(sVoice, 0, FAUDIO_COMMIT_NOW) == R_OK);
+            assert(FAudioSourceVoice_Stop(sVoice, 0, FAUDIO_COMMIT_NOW) == 0);
         }
 
         FAudioVoice_DestroyVoice(sVoice);
@@ -228,11 +228,11 @@ bool FAudio_Output::init(long sampleRate)
 
     // Initialize FAudio
     uint32_t flags = 0;
-    //#ifdef _DEBUG
-    //	flags = FAUDIO_DEBUG_ENGINE;
-    //#endif
+    #ifdef _DEBUG
+    	flags = FAUDIO_DEBUG_ENGINE;
+    #endif
 
-    if (FAudioCreate(&faud, flags, FAUDIO_DEFAULT_PROCESSOR) != R_OK) {
+    if (FAudioCreate(&faud, flags, FAUDIO_DEFAULT_PROCESSOR) != 0) {
         wxLogError(_("The FAudio interface failed to initialize!"));
         failed = true;
         return false;
@@ -256,7 +256,7 @@ bool FAudio_Output::init(long sampleRate)
     wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
     // create sound receiver
 
-    if (FAudio_CreateMasteringVoice(faud, &mVoice, FAUDIO_DEFAULT_CHANNELS, FAUDIO_DEFAULT_SAMPLERATE, 0, FAGetDev(faud), NULL) != R_OK) {
+    if (FAudio_CreateMasteringVoice(faud, &mVoice, FAUDIO_DEFAULT_CHANNELS, FAUDIO_DEFAULT_SAMPLERATE, 0, FAGetDev(faud), NULL) != 0) {
         wxLogError(_("FAudio: Creating mastering voice failed!"));
         failed = true;
         return false;
@@ -266,7 +266,7 @@ bool FAudio_Output::init(long sampleRate)
     //This should be  FAudio_CreateSourceVoice()
     //hr = faud->CreateSourceVoice(&sVoice, &wfx, 0, 4.0f, &notify);
 
-    if (FAudio_CreateSourceVoice(faud, &sVoice, (const FAudioWaveFormatEx*)&wfx, 0, 4.0f, &notify, NULL, NULL) != R_OK) {
+    if (FAudio_CreateSourceVoice(faud, &sVoice, (const FAudioWaveFormatEx*)&wfx, 0, 4.0f, &notify, NULL, NULL) != 0) {
         wxLogError(_("FAudio: Creating source voice failed!"));
         failed = true;
         return false;
@@ -276,7 +276,7 @@ bool FAudio_Output::init(long sampleRate)
         // set up stereo upmixing
         FAudioDeviceDetails dd;
         memset(&dd, NULL, sizeof(dd));
-        assert(FAudio_GetDeviceDetails(faud, 0, &dd) == R_OK);
+        assert(FAudio_GetDeviceDetails(faud, 0, &dd) == 0);
         float* matrix = NULL;
         matrix = (float*)malloc(sizeof(float) * 2 * dd.OutputFormat.Format.nChannels);
 
@@ -372,14 +372,14 @@ bool FAudio_Output::init(long sampleRate)
         }
 
         if (matrixAvailable) {
-            assert(FAudioVoice_SetOutputMatrix(sVoice, NULL, 2, dd.OutputFormat.Format.nChannels, matrix, FAUDIO_DEFAULT_CHANNELS) == R_OK);
+            assert(FAudioVoice_SetOutputMatrix(sVoice, NULL, 2, dd.OutputFormat.Format.nChannels, matrix, FAUDIO_DEFAULT_CHANNELS) == 0);
         }
 
         free(matrix);
         matrix = NULL;
     }
 
-    assert(FAudioSourceVoice_Start(sVoice, 0, FAUDIO_COMMIT_NOW) == R_OK);
+    assert(FAudioSourceVoice_Start(sVoice, 0, FAUDIO_COMMIT_NOW) == 0);
     playing = true;
     currentBuffer = 0;
     device_changed = false;
@@ -435,7 +435,7 @@ void FAudio_Output::write(uint16_t* finalWave, int length)
     buf.pAudioData = &buffers[currentBuffer * soundBufferLen];
     currentBuffer++;
     currentBuffer %= (bufferCount + 1); // + 1 because we need one temporary buffer
-    assert(FAudioSourceVoice_SubmitSourceBuffer(sVoice, &buf, NULL) == R_OK);
+    assert(FAudioSourceVoice_SubmitSourceBuffer(sVoice, &buf, NULL) == 0);
 }
 
 void FAudio_Output::pause()
@@ -444,7 +444,7 @@ void FAudio_Output::pause()
         return;
 
     if (playing) {
-        assert(FAudioSourceVoice_Stop(sVoice, 0, FAUDIO_COMMIT_NOW) == R_OK);
+        assert(FAudioSourceVoice_Stop(sVoice, 0, FAUDIO_COMMIT_NOW) == 0);
         playing = false;
     }
 }
@@ -455,7 +455,7 @@ void FAudio_Output::resume()
         return;
 
     if (!playing) {
-        assert(FAudioSourceVoice_Start(sVoice, 0, FAUDIO_COMMIT_NOW) == R_OK);
+        assert(FAudioSourceVoice_Start(sVoice, 0, FAUDIO_COMMIT_NOW) == 0);
         playing = true;
     }
 }
@@ -466,7 +466,7 @@ void FAudio_Output::reset()
         return;
 
     if (playing) {
-        assert(FAudioSourceVoice_Stop(sVoice, 0, FAUDIO_COMMIT_NOW) == R_OK);
+        assert(FAudioSourceVoice_Stop(sVoice, 0, FAUDIO_COMMIT_NOW) == 0);
     }
 
     FAudioSourceVoice_FlushSourceBuffers(sVoice);
@@ -482,7 +482,7 @@ void FAudio_Output::setThrottle(unsigned short throttle_)
     if (throttle_ == 0)
         throttle_ = 100;
 
-    assert(FAudioSourceVoice_SetFrequencyRatio(sVoice, (float)throttle_ / 100.0f, FAUDIO_MAX_FILTER_FREQUENCY) == R_OK);
+    assert(FAudioSourceVoice_SetFrequencyRatio(sVoice, (float)throttle_ / 100.0f, FAUDIO_MAX_FILTER_FREQUENCY) == 0);
 }
 
 void faudio_device_changed(FAudio_Output* instance)
