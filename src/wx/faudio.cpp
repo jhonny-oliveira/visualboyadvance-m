@@ -9,7 +9,7 @@
 
 // FAudio
 #include <FAudio.h>
-
+#include <pthread.h>
 #include <string>
 #include <vector>
 
@@ -20,20 +20,24 @@
 int GetFADevices(FAudio* fa, wxArrayString* names, wxArrayString* ids,
     const wxString* match)
 {
+    uint32_t hr;
     uint32_t dev_count = 0;
+    hr = FAudio_GetDeviceCount(fa, &dev_count);
 
-    if (FAudio_GetDeviceCount(fa, &dev_count) != 0) {
+    if (hr != 0) {
         wxLogError(_("FAudio: Enumerating devices failed!"));
         return true;
     } else {
         FAudioDeviceDetails dd;
 
         for (uint32_t i = 0; i < dev_count; i++) {
-            if (FAudio_GetDeviceDetails(fa, i, &dd) != 0) {
+            hr = FAudio_GetDeviceDetails(fa, i, &dd);
+
+            if (hr != 0) {
                 continue;
             } else {
                 if (ids) {
-                    ids->push_back((wchar_t*) dd.DeviceID); //FAudio is an interesting beast, but not that hard to adapt... once you get used to it, XAudio2 wouldn't need this, but FAudio declares FAudioDeviceDetails as int32_t
+                    ids->push_back((wchar_t*) dd.DeviceID);
                     names->push_back((wchar_t*) dd.DisplayName);
                 } else if (*match == wxString((wchar_t*) dd.DeviceID))
                     return i;
@@ -46,13 +50,15 @@ int GetFADevices(FAudio* fa, wxArrayString* names, wxArrayString* ids,
 
 bool GetFADevices(wxArrayString& names, wxArrayString& ids)
 {
+    uint32_t hr;
     FAudio* fa = NULL;
     uint32_t flags = 0;
 #ifdef _DEBUG
     flags = FAUDIO_DEBUG_ENGINE;
 #endif
+    hr = FAudioCreate(&fa, flags, FAUDIO_DEFAULT_PROCESSOR);
 
-    if (FAudioCreate(&fa, flags, FAUDIO_DEFAULT_PROCESSOR) != 0) {
+    if (hr != 0) {
         wxLogError(_("The FAudio interface failed to initialize!"));
         return false;
     }
@@ -78,47 +84,96 @@ static void faudio_device_changed(FAudio_Output*);
 
 class FAudio_Device_Notifier {
     std::wstring last_device;
+    pthread_mutex_t lock;
+    
     std::vector<FAudio_Output*> instances;
 
 public:
-    FAudio_Device_Notifier() = default;
-    ~FAudio_Device_Notifier() = default;
+    FAudio_Device_Notifier()
+    {
+        pthread_mutex_init(&lock, NULL);
+    }
+
+    ~FAudio_Device_Notifier()
+    {
+        pthread_mutex_destroy(&lock);
+    }
+
+    ULONG FAUDIOAPI AddRef()
+    {
+        return 1;
+    }
+
+    ULONG FAUDIOAPI Release()
+    {
+        return 1;
+    }
+
+    //uint32_t FAUDIOAPI QueryInterface or it should be, I still need to find a cross platform way to query devices.
+
+    void OnDefaultDeviceChanged() // This is the callback that is called when the default device is changed. The XAudio2 driver leverages mmdeviceapi, but here we can't rely on that, so we need to find a method that work on all platforms.
+    {
+
+        pthread_mutex_lock(&lock);
+        for (auto it = instances.begin(); it < instances.end(); ++it)
+        {
+            faudio_device_changed(*it);
+        }
+        pthread_mutex_unlock(&lock);
+    }
 
     void do_register(FAudio_Output* p_instance)
     {
+        pthread_mutex_lock(&lock);
         instances.push_back(p_instance);
+        pthread_mutex_unlock(&lock);
     }
 
     void do_unregister(FAudio_Output* p_instance)
     {
+        pthread_mutex_lock(&lock);
+
         for (auto it = instances.begin(); it < instances.end(); ++it) {
             if (*it == p_instance) {
                 instances.erase(it);
                 break;
             }
         }
+        
+        pthread_mutex_unlock(&lock);
     }
-    void OnDefaultDeviceChanged()
-    {
-        for (auto it = instances.begin(); it < instances.end(); ++it)
-        {
-            faudio_device_changed(*it);
-        }
-    }
+
 } g_notifier;
 
 // Synchronization Event
 class FAudio_BufferNotify : public FAudioVoiceCallback {
 public:
-    void OnBufferEnd(void* pBufferContext) {}
+    void *hBufferEndEvent;
+
+    FAudio_BufferNotify()
+    {
+        hBufferEndEvent = NULL;
+        //I'm still figuring out how to deal with pthreads, so I'm going to leave this empty for now.
+        //hBufferEndEvent = pthread_cond_init();
+    }
+    ~FAudio_BufferNotify()
+    {
+        //I'm still figuring out how to deal with pthreads, so I'm going to leave this empty for now.
+        //pthread_cond_destroy(hBufferEndEvent);
+    }
+
+    void OnBufferEnd(void* pBufferContext)
+    {
+
+    }
     void OnVoiceProcessingPassStart(uint32_t BytesRequired) {}
     void OnVoiceProcessingPassEnd() {}
     void OnStreamEnd() {}
     void OnBufferStart(void* pBufferContext) {}
     void OnLoopEnd(void* pBufferContext) {}
-    void OnVoiceError(void* pBufferContext, int Error) {}
+    void OnVoiceError(void* pBufferContext, uint32_t Error) {}
 };
-
+    
 // Class Declaration
 class FAudio_Output
     : public SoundDriver {
@@ -226,13 +281,15 @@ bool FAudio_Output::init(long sampleRate)
     if (failed || initialized)
         return false;
 
+    uint32_t hr;
     // Initialize FAudio
     uint32_t flags = 0;
-    #ifdef _DEBUG
-    	flags = FAUDIO_DEBUG_ENGINE;
-    #endif
+    //#ifdef _DEBUG
+    //	flags = FAUDIO_DEBUG_ENGINE;
+    //#endif
+    hr = FAudioCreate(&faud, flags, FAUDIO_DEFAULT_PROCESSOR);
 
-    if (FAudioCreate(&faud, flags, FAUDIO_DEFAULT_PROCESSOR) != 0) {
+    if (hr != 0) {
         wxLogError(_("The FAudio interface failed to initialize!"));
         failed = true;
         return false;
@@ -255,8 +312,15 @@ bool FAudio_Output::init(long sampleRate)
     wfx.nBlockAlign = wfx.nChannels * (wfx.wBitsPerSample / 8);
     wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
     // create sound receiver
+    hr = FAudio_CreateMasteringVoice(faud,
+    &mVoice,
+    FAUDIO_DEFAULT_CHANNELS,
+    FAUDIO_DEFAULT_SAMPLERATE,
+    0,
+    FAGetDev(faud),
+    NULL);
 
-    if (FAudio_CreateMasteringVoice(faud, &mVoice, FAUDIO_DEFAULT_CHANNELS, FAUDIO_DEFAULT_SAMPLERATE, 0, FAGetDev(faud), NULL) != 0) {
+    if (hr != 0) {
         wxLogError(_("FAudio: Creating mastering voice failed!"));
         failed = true;
         return false;
@@ -265,8 +329,9 @@ bool FAudio_Output::init(long sampleRate)
     // create sound emitter
     //This should be  FAudio_CreateSourceVoice()
     //hr = faud->CreateSourceVoice(&sVoice, &wfx, 0, 4.0f, &notify);
+    hr = FAudio_CreateSourceVoice(faud, &sVoice, &wfx, 0, 4.0f, &notify);
 
-    if (FAudio_CreateSourceVoice(faud, &sVoice, (const FAudioWaveFormatEx*)&wfx, 0, 4.0f, &notify, NULL, NULL) != 0) {
+    if (hr != 0) {
         wxLogError(_("FAudio: Creating source voice failed!"));
         failed = true;
         return false;
@@ -372,14 +437,16 @@ bool FAudio_Output::init(long sampleRate)
         }
 
         if (matrixAvailable) {
-            assert(FAudioVoice_SetOutputMatrix(sVoice, NULL, 2, dd.OutputFormat.Format.nChannels, matrix, FAUDIO_DEFAULT_CHANNELS) == 0);
+            hr = FAudioVoice_SetOutputMatrix(sVoice, NULL, 2, dd.OutputFormat.Format.nChannels, matrix, FAUDIO_DEFAULT_CHANNELS);
+            assert(hr == 0);
         }
 
         free(matrix);
         matrix = NULL;
     }
 
-    assert(FAudioSourceVoice_Start(sVoice, 0, FAUDIO_COMMIT_NOW) == 0);
+    hr = FAudioSourceVoice_Start(sVoice, 0, FAUDIO_COMMIT_NOW);
+    assert(hr == 0);
     playing = true;
     currentBuffer = 0;
     device_changed = false;
@@ -417,16 +484,16 @@ void FAudio_Output::write(uint16_t* finalWave, int length)
             break;
         } //else {
             // the maximum number of buffers is currently queued
-            //if (!coreOptions.speedup && coreOptions.throttle && !gba_joybus_active) {
+            if (!coreOptions.speedup && coreOptions.throttle && !gba_joybus_active) {
                 // wait for one buffer to finish playing
-            //    if (WaitForSingleObject(notify.hBufferEndEvent, 10000) == WAIT_TIMEOUT) {
-            //       device_changed = true;
-            //    }
-            //} else {
+                if (WaitForSingleObject(notify.hBufferEndEvent, 10000) == WAIT_TIMEOUT) {
+                   device_changed = true;
+                }
+            } else {
                 // drop current audio frame
-            //    return;
-            //}
-        //}
+                return;
+            }
+        }
     }
 
     // copy & protect the audio data in own memory area while playing it
@@ -435,7 +502,8 @@ void FAudio_Output::write(uint16_t* finalWave, int length)
     buf.pAudioData = &buffers[currentBuffer * soundBufferLen];
     currentBuffer++;
     currentBuffer %= (bufferCount + 1); // + 1 because we need one temporary buffer
-    assert(FAudioSourceVoice_SubmitSourceBuffer(sVoice, &buf, NULL) == 0);
+    uint32_t hr = FAudioSourceVoice_SubmitSourceBuffer(sVoice, &buf, NULL);
+    assert(hr == 0);
 }
 
 void FAudio_Output::pause()
@@ -444,7 +512,8 @@ void FAudio_Output::pause()
         return;
 
     if (playing) {
-        assert(FAudioSourceVoice_Stop(sVoice, 0, FAUDIO_COMMIT_NOW) == 0);
+        uint32_t hr = FAudioSourceVoice_Stop(sVoice, 0, FAUDIO_COMMIT_NOW);
+        assert(hr == 0);
         playing = false;
     }
 }
@@ -455,7 +524,8 @@ void FAudio_Output::resume()
         return;
 
     if (!playing) {
-        assert(FAudioSourceVoice_Start(sVoice, 0, FAUDIO_COMMIT_NOW) == 0);
+        uint32_t hr = FAudioSourceVoice_Start(sVoice, 0, FAUDIO_COMMIT_NOW);
+        assert(hr == 0);
         playing = true;
     }
 }
@@ -466,7 +536,8 @@ void FAudio_Output::reset()
         return;
 
     if (playing) {
-        assert(FAudioSourceVoice_Stop(sVoice, 0, FAUDIO_COMMIT_NOW) == 0);
+        uint32_t hr = FAudioSourceVoice_Stop(sVoice, 0, FAUDIO_COMMIT_NOW);
+        assert(hr == 0);
     }
 
     FAudioSourceVoice_FlushSourceBuffers(sVoice);
@@ -482,7 +553,8 @@ void FAudio_Output::setThrottle(unsigned short throttle_)
     if (throttle_ == 0)
         throttle_ = 100;
 
-    assert(FAudioSourceVoice_SetFrequencyRatio(sVoice, (float)throttle_ / 100.0f, FAUDIO_MAX_FILTER_FREQUENCY) == 0);
+    uint32_t hr = FAudioSourceVoice_SetFrequencyRatio(sVoice, (float)throttle_ / 100.0f, FAUDIO_MAX_FILTER_FREQUENCY);
+    assert(hr == 0);
 }
 
 void faudio_device_changed(FAudio_Output* instance)
